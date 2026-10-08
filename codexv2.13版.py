@@ -27,8 +27,6 @@ import time
 import tokenize
 import traceback
 import types
-import urllib.error
-import urllib.request
 
 _T0 = time.time()
 
@@ -129,24 +127,27 @@ import signal
 import pytest
 
 TIME_LIMIT_SECONDS = 10
+# After this many tests ran out of time the library is taken to hang everywhere, and the remaining
+# tests fail at once instead of each waiting for the limit.
+MAX_EXPIRED_TESTS = 3
 
 
 class TimeLimitExceeded(BaseException):
     """Raised inside a test that ran longer than TIME_LIMIT_SECONDS."""
 
 
-_state = {"expired": False}
+_state = {"expired": 0}
 
 
 def _expire(signum, frame):
-    _state["expired"] = True
+    _state["expired"] += 1
     raise TimeLimitExceeded("test ran longer than %s seconds" % TIME_LIMIT_SECONDS)
 
 
 @pytest.fixture(autouse=True)
 def _time_limit():
-    if _state["expired"]:
-        pytest.fail("not run: an earlier test exceeded the time limit")
+    if _state["expired"] >= MAX_EXPIRED_TESTS:
+        pytest.fail("not run: %d earlier tests exceeded the time limit" % _state["expired"])
     if not hasattr(signal, "setitimer"):
         yield
         return
@@ -167,50 +168,108 @@ class _Unrecordable(Exception):
 class _CaseTimeout(BaseException):
     pass
 
-def _to_src(v, depth=0):
-    if depth > 40:
-        raise _Unrecordable("the result is nested too deeply")
-    if v is None:
-        return "None"
-    if isinstance(v, bool):
-        return "True" if v else "False"
-    if isinstance(v, int):
-        return repr(int(v))
-    if isinstance(v, float):
-        f = float(v)
-        if math.isnan(f):
-            return "float('nan')"
-        if math.isinf(f):
-            return "float('inf')" if f > 0 else "-float('inf')"
-        return repr(f)
-    if isinstance(v, complex):
-        return "complex(%s, %s)" % (_to_src(float(v.real)), _to_src(float(v.imag)))
-    if isinstance(v, str):
-        return repr(v[:])
-    if isinstance(v, (bytes, bytearray)):
-        return repr(bytes(v))
-    if isinstance(v, tuple):
-        items = [_to_src(x, depth + 1) for x in v]
-        return "(" + ", ".join(items) + ("," if len(items) == 1 else "") + ")"
-    if isinstance(v, list):
-        return "[" + ", ".join(_to_src(x, depth + 1) for x in v) + "]"
-    if isinstance(v, dict):
-        return "{" + ", ".join("%s: %s" % (_to_src(k, depth + 1), _to_src(x, depth + 1)) for k, x in v.items()) + "}"
-    if isinstance(v, (set, frozenset)):
-        items = sorted(_to_src(x, depth + 1) for x in v)
-        if isinstance(v, frozenset):
-            return "frozenset({%s})" % ", ".join(items) if items else "frozenset()"
-        return "{%s}" % ", ".join(items) if items else "set()"
-    if hasattr(v, "__next__"):
-        raise _Unrecordable("returned an iterator; wrap it in list()")
-    raise _Unrecordable("returned a %s.%s, which is not plain data; return plain data derived from it "
-                        "through the public API" % (type(v).__module__, type(v).__qualname__))
+def _to_src(v, depth=0, limit=None):
+    """Source text that evaluates to the plain value `v`.
+
+    With `limit`, gives up as soon as the text is known to be longer than `limit` characters, so that a
+    huge result costs little time and memory before it is rejected.
+    """
+    left = [math.inf if limit is None else limit]
+
+    def spend(n):
+        left[0] -= n
+        if left[0] < 0:
+            raise _Unrecordable("the result is too large (more than %d characters); return a smaller summary of "
+                                "it" % limit)
+
+    def leaf(text):
+        spend(len(text))
+        return text
+
+    def items_of(values, depth):
+        out = []
+        for x in values:
+            spend(2)
+            out.append(conv(x, depth + 1))
+        return out
+
+    def conv(v, depth):
+        if depth > 40:
+            raise _Unrecordable("the result is nested too deeply")
+        if v is None:
+            return leaf("None")
+        if isinstance(v, bool):
+            return leaf("True" if v else "False")
+        if isinstance(v, int):
+            return leaf(repr(int(v)))
+        if isinstance(v, float):
+            f = float(v)
+            if math.isnan(f):
+                return leaf("float('nan')")
+            if math.isinf(f):
+                return leaf("float('inf')" if f > 0 else "-float('inf')")
+            return leaf(repr(f))
+        if isinstance(v, complex):
+            return "complex(%s, %s)" % (conv(float(v.real), 0), conv(float(v.imag), 0))
+        if isinstance(v, (str, bytes, bytearray)):
+            if len(v) > left[0]:
+                spend(len(v))
+            return leaf(repr(v[:]) if isinstance(v, str) else repr(bytes(v)))
+        if isinstance(v, tuple):
+            items = items_of(v, depth)
+            return "(" + ", ".join(items) + ("," if len(items) == 1 else "") + ")"
+        if isinstance(v, list):
+            return "[" + ", ".join(items_of(v, depth)) + "]"
+        if isinstance(v, dict):
+            pairs = []
+            for k, x in v.items():
+                spend(4)
+                pairs.append("%s: %s" % (conv(k, depth + 1), conv(x, depth + 1)))
+            return "{" + ", ".join(pairs) + "}"
+        if isinstance(v, (set, frozenset)):
+            items = sorted(items_of(v, depth))
+            if isinstance(v, frozenset):
+                return "frozenset({%s})" % ", ".join(items) if items else "frozenset()"
+            return "{%s}" % ", ".join(items) if items else "set()"
+        if hasattr(v, "__next__"):
+            raise _Unrecordable("returned an iterator; wrap it in list()")
+        raise _Unrecordable("returned a %s.%s, which is not plain data; return plain data derived from it "
+                            "through the public API" % (type(v).__module__, type(v).__qualname__))
+
+    return conv(v, depth)
 
 class _LineTracer:
+    """Records the (file, line) pairs under `root` that run between start() and stop().
+
+    Uses sys.monitoring where available (each location reports once per case, so traced cases run
+    almost at full speed) and sys.settrace otherwise; both give the same lines.
+    """
 
     def __init__(self, root):
         self.root = root
         self.lines = set()
+        self.tool = None
+        mon = getattr(sys, "monitoring", None)
+        if mon is not None:
+            for tool in (4, 3, 2):
+                try:
+                    mon.use_tool_id(tool, "tg-lines")
+                except ValueError:
+                    continue
+                self.tool = tool
+                mon.register_callback(tool, mon.events.PY_START, self._mon_start)
+                mon.register_callback(tool, mon.events.LINE, self._mon_line)
+                break
+
+    def _mon_start(self, code, offset):
+        if code.co_filename.startswith(self.root):
+            self.lines.add((code.co_filename, 0 if code.co_name == "<module>" else code.co_firstlineno))
+        return sys.monitoring.DISABLE
+
+    def _mon_line(self, code, line):
+        if code.co_filename.startswith(self.root):
+            self.lines.add((code.co_filename, line))
+        return sys.monitoring.DISABLE
 
     def _global(self, frame, event, arg):
         if frame.f_code.co_filename.startswith(self.root):
@@ -225,16 +284,38 @@ class _LineTracer:
 
     def start(self):
         self.lines = set()
+        if self.tool is not None:
+            sys.monitoring.restart_events()
+            sys.monitoring.set_events(self.tool, sys.monitoring.events.PY_START | sys.monitoring.events.LINE)
+            return
         threading.settrace(self._global)
         sys.settrace(self._global)
 
     def stop(self):
-        sys.settrace(None)
-        threading.settrace(None)
-        return sorted([os.path.relpath(f, self.root), n] for f, n in self.lines)
+        if self.tool is not None:
+            sys.monitoring.set_events(self.tool, 0)
+        else:
+            sys.settrace(None)
+            threading.settrace(None)
+        rel = {}
+        out = []
+        for f, n in self.lines:
+            r = rel.get(f)
+            if r is None:
+                r = rel[f] = os.path.relpath(f, self.root)
+            out.append([r, n])
+        out.sort()
+        return out
+
+def _safe_str(e) -> str:
+    """str(e), even for exceptions whose __str__ itself fails."""
+    try:
+        return str(e)
+    except Exception:
+        return "<str() of the %s failed>" % type(e).__name__
 
 def _fmt_exc(e):
-    text = "%s: %s" % (type(e).__name__, e)
+    text = "%s: %s" % (type(e).__name__, _safe_str(e))
     return text if len(text) < 300 else text[:300] + "..."
 
 def _describe_api(mod, limit=16000):
@@ -293,6 +374,20 @@ def _describe_api(mod, limit=16000):
             break
     return "\n".join(out)
 
+_PUBLIC_MODULES: dict = {}
+
+def _public_modules(roots) -> list:
+    """Loaded public modules of the packages `roots`, shallowest first (cached while sys.modules is unchanged)."""
+    key = (frozenset(roots), len(sys.modules))
+    mods = _PUBLIC_MODULES.get(key)
+    if mods is None:
+        mods = sorted((name for name in list(sys.modules) if name.split(".")[0] in roots
+                       and not any(part.startswith("_") for part in name.split("."))),
+                      key=lambda name: (name.count("."), name))
+        _PUBLIC_MODULES.clear()
+        _PUBLIC_MODULES[key] = mods
+    return mods
+
 def _public_class_path(cls, roots):
     for klass in cls.__mro__:
         if klass in (BaseException, Exception, object):
@@ -301,10 +396,7 @@ def _public_class_path(cls, roots):
             return klass.__name__
         if klass.__name__.startswith("_"):
             continue
-        mods = sorted((name for name in list(sys.modules) if name.split(".")[0] in roots
-                       and not any(part.startswith("_") for part in name.split("."))),
-                      key=lambda name: (name.count("."), name))
-        for name in mods:
+        for name in _public_modules(roots):
             if getattr(sys.modules.get(name), klass.__name__, None) is klass:
                 return name + "." + klass.__name__
     return "Exception"
@@ -324,9 +416,12 @@ def _runner_main(cfg_path):
     for p in reversed(cfg.get("sys_path", [])):
         sys.path.insert(0, p)
     out = open(cfg["out"], "a", buffering=1)
+    out_lock = threading.Lock()
 
     def emit(obj):
-        out.write(json.dumps(obj) + "\n")
+        line = json.dumps(obj) + "\n"
+        with out_lock:
+            out.write(line)
 
     mode = cfg["mode"]
     if mode == "deps":
@@ -395,6 +490,17 @@ def _optional_modules(declared: list, packages: list) -> list:
     roots = list(declared) + ["pytest"]
     for pkg in packages:
         roots += mod_dists.get(pkg, [])
+    # pytest plugins load whenever pytest starts; hiding one would break every suite run, not test absence
+    try:
+        dists = list(md.distributions())
+    except Exception:
+        dists = []
+    for dist in dists:
+        try:
+            if any(ep.group == "pytest11" for ep in dist.entry_points) and dist.metadata["Name"]:
+                roots.append(dist.metadata["Name"])
+        except Exception:
+            pass
     keep, todo = set(), [norm(r) for r in roots]
     while todo:
         name = todo.pop()
@@ -436,6 +542,24 @@ class _Absent:
 
 
 sys.meta_path.insert(0, _Absent())
+
+
+def _hide_from_find_spec():
+    import importlib.util
+
+    real = importlib.util.find_spec
+
+    def find_spec(name, package=None):
+        # a probe for an optional package answers None when it is not installed; it does not raise
+        full = importlib.util.resolve_name(name, package) if name.startswith(".") else name
+        if full in _ABSENT:
+            return None
+        return real(name, package)
+
+    importlib.util.find_spec = find_spec
+
+
+_hide_from_find_spec()
 '''
 
 def _declared_dependencies(repo: str) -> list:
@@ -492,18 +616,31 @@ def _declared_dependencies(repo: str) -> list:
             pass
     return sorted(names)
 
-def _run_cases(cfg, mode, modules, emit, same, tracer=None):
+def _takes_tmp_path(fn) -> bool:
+    code = getattr(fn, "__code__", None)
+    if code is not None:
+        return "tmp_path" in code.co_varnames[:code.co_argcount + code.co_kwonlyargcount]
     import inspect
-    import pathlib
+    try:
+        return "tmp_path" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+def _run_cases(cfg, mode, modules, emit, same, tracer=None):
+    import faulthandler
 
     timeout = float(cfg.get("timeout", CASE_TIMEOUT))
     tmp_base = cfg.get("tmp_base") or tempfile.gettempdir()
     expected = cfg.get("expected") or {}
+    armed = [False]
+    # In record mode a case that cannot be stopped (it swallows the timeout, or hangs inside C code)
+    # ends the process; the caller then marks the case that started last as hanging and goes on.
+    hard_limit = timeout * 1.5 + 2 if mode == "record" else None
 
     def on_alarm(signum, frame):
-        raise _CaseTimeout()
+        if armed[0]:
+            raise _CaseTimeout()
 
-    signal.signal(signal.SIGALRM, on_alarm)
     for key in cfg["cases"]:
         mod_name, case_name = key.split("::", 1)
         m = modules.get(mod_name)
@@ -516,22 +653,31 @@ def _run_cases(cfg, mode, modules, emit, same, tracer=None):
                 if cfg.get("stop_on_first"):
                     break
             continue
-        emit({"kind": "start", "key": key})
+        if mode == "record":
+            emit({"kind": "start", "key": key})
         kwargs = {}
-        try:
-            if "tmp_path" in inspect.signature(fn).parameters:
-                kwargs["tmp_path"] = pathlib.Path(tempfile.mkdtemp(prefix="case-", dir=tmp_base))
-        except (TypeError, ValueError):
-            pass
+        if _takes_tmp_path(fn):
+            import pathlib
+            kwargs["tmp_path"] = pathlib.Path(tempfile.mkdtemp(prefix="case-", dir=tmp_base))
         status, value, exc, lines = "value", None, None, None
         t0 = time.perf_counter()
-        signal.setitimer(signal.ITIMER_REAL, timeout)
+        # installed again for every case: an earlier case may have replaced the handler
+        signal.signal(signal.SIGALRM, on_alarm)
+        armed[0] = True
+        # fires again every half second, in case the first one is swallowed by a bare `except:`
+        signal.setitimer(signal.ITIMER_REAL, timeout, 0.5)
+        if hard_limit:
+            try:
+                faulthandler.dump_traceback_later(hard_limit, exit=True)
+            except Exception:
+                hard_limit = None
         try:
             if tracer:
                 tracer.start()
             try:
                 value = fn(**kwargs)
             finally:
+                armed[0] = False
                 if tracer:
                     lines = tracer.stop()
         except _CaseTimeout:
@@ -541,13 +687,16 @@ def _run_cases(cfg, mode, modules, emit, same, tracer=None):
         except BaseException as e:
             status, exc = "fatal", e
         finally:
+            armed[0] = False
             signal.setitimer(signal.ITIMER_REAL, 0)
+            if hard_limit:
+                faulthandler.cancel_dump_traceback_later()
         secs = time.perf_counter() - t0
         if mode == "record":
             rec = {"kind": "case", "key": key, "status": status, "secs": round(secs, 4)}
             if status == "value":
                 try:
-                    src = _to_src(value)
+                    src = _to_src(value, limit=MAX_RESULT_CHARS)
                     if len(src) > MAX_RESULT_CHARS:
                         raise _Unrecordable("the result is too large (%d characters); return a smaller "
                                             "summary of it" % len(src))
@@ -558,7 +707,7 @@ def _run_cases(cfg, mode, modules, emit, same, tracer=None):
                     rec["status"], rec["error"] = "error", "could not record the result: " + _fmt_exc(e)
             elif status == "raises":
                 rec["exc"] = type(exc).__name__
-                rec["msg"] = str(exc)[:160]
+                rec["msg"] = _safe_str(exc)[:160]
                 try:
                     rec["cls"] = _public_class_path(type(exc), set(cfg.get("packages") or ()))
                 except Exception:
@@ -598,7 +747,9 @@ class _Unsupported(Exception):
     pass
 
 def _code_children(code):
-    return [c for c in code.co_consts if isinstance(c, types.CodeType)]
+    # Python 3.14 compiles lazily evaluated annotations into extra `__annotate__` functions whose line
+    # spans overlap the real definitions; they never hold a changed line.
+    return [c for c in code.co_consts if isinstance(c, types.CodeType) and not c.co_name.startswith("__annotate")]
 
 def _code_lines(code, cache):
     key = id(code)
@@ -636,8 +787,10 @@ def _server_main(cfg_path):
         cfg = json.load(fh)
     for p in reversed(cfg.get("sys_path", [])):
         sys.path.insert(0, p)
-    proto_in = sys.stdin.buffer
+    # the protocol gets its own descriptors; a case that reads stdin or prints sees /dev/null
+    proto_in = os.fdopen(os.dup(0), "rb")
     proto_out = os.fdopen(os.dup(1), "w", buffering=1)
+    os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
     devnull = os.open(os.devnull, os.O_WRONLY)
     os.dup2(devnull, 1)
     os.dup2(devnull, 2)
@@ -649,18 +802,6 @@ def _server_main(cfg_path):
     ns = {"math": math}
     exec(SAME_SRC, ns)
     same = ns["_same_value"]
-    errors = []
-    for pkg in cfg.get("packages") or ():
-        try:
-            importlib.import_module(pkg)
-        except BaseException as e:
-            errors.append("library: " + _fmt_exc(e))
-    modules = {}
-    for name in cfg["modules"]:
-        try:
-            modules[name] = importlib.import_module(name)
-        except BaseException as e:
-            errors.append("%s: %s" % (name, _fmt_exc(e)))
     src_root = os.path.realpath(cfg["src_root"])
     real = {}
 
@@ -668,6 +809,61 @@ def _server_main(cfg_path):
         if f not in real:
             real[f] = os.path.realpath(f) if not f.startswith("<") else f
         return real[f]
+
+    # Functions of the library that run while it is imported may have left results behind (module-level
+    # tables, warmed caches); swapping their code later would not change those, so such changes are left
+    # to the slow path, which imports the changed library afresh.
+    ran_at_import = set()
+
+    def note_code(code):
+        if code.co_flags & 0x2:
+            fname = realname(code.co_filename)
+            if fname.startswith(src_root + os.sep):
+                ran_at_import.add((fname, code.co_name, code.co_firstlineno))
+
+    mon, tool = getattr(sys, "monitoring", None), None
+    if mon is not None:
+        for t in (4, 3, 2):
+            try:
+                mon.use_tool_id(t, "tg-import")
+            except ValueError:
+                continue
+            tool = t
+
+            def on_start(code, offset):
+                note_code(code)
+                return mon.DISABLE
+            mon.register_callback(tool, mon.events.PY_START, on_start)
+            mon.set_events(tool, mon.events.PY_START)
+            break
+    if tool is None:
+        def profiler(frame, event, arg):
+            if event == "call":
+                note_code(frame.f_code)
+        sys.setprofile(profiler)
+    errors = []
+    try:
+        for pkg in cfg.get("packages") or ():
+            try:
+                importlib.import_module(pkg)
+            except BaseException as e:
+                errors.append("library: " + _fmt_exc(e))
+        modules = {}
+        for name in cfg["modules"]:
+            try:
+                modules[name] = importlib.import_module(name)
+            except BaseException as e:
+                errors.append("%s: %s" % (name, _fmt_exc(e)))
+    finally:
+        if tool is not None:
+            mon.set_events(tool, 0)
+            mon.register_callback(tool, mon.events.PY_START, None)
+            mon.free_tool_id(tool)
+        else:
+            sys.setprofile(None)
+    import faulthandler  # noqa: F401  imported once here instead of in every forked check
+    import inspect  # noqa: F401
+    import pathlib  # noqa: F401
 
     index = {}
     for obj in gc.get_objects():
@@ -811,6 +1007,8 @@ def _server_main(cfg_path):
             live = live_functions(path, target) if target else []
             if not live:
                 raise _Unsupported("no live function for the changed default")
+            if (path, target.co_name, target.co_firstlineno) in ran_at_import:
+                raise _Unsupported("the function runs when the library is imported")
             return {"kind": "default", "live": live, "d": d}
         new_src = src[:mut["start"]] + mut["repl"].encode("utf-8") + src[mut["end"]:]
         try:
@@ -818,6 +1016,9 @@ def _server_main(cfg_path):
         except SyntaxError as e:
             raise _Unsupported("does not compile: %s" % _fmt_exc(e))
         chain = _code_chain(orig_code, new_code, mut["line"], line_cache)
+        innermost = next((a for a, _ in reversed(chain) if a.co_flags & 0x2), None)
+        if innermost is not None and (path, innermost.co_name, innermost.co_firstlineno) in ran_at_import:
+            raise _Unsupported("the changed function runs when the library is imported")
         swaps = []
         for a, b in chain:
             for f in live_functions(path, a):
@@ -925,6 +1126,11 @@ def _server_main(cfg_path):
                         setattr(m, attr, new)
         return True
 
+    compiled = {}
+    last_plan = [None, None]
+    # objects that exist now are never freed; keeping the collector off them spares every forked check
+    # from copying the pages they live on
+    gc.freeze()
     while True:
         line = proto_in.readline()
         if not line:
@@ -935,10 +1141,25 @@ def _server_main(cfg_path):
             continue
         if req.get("op") == "quit":
             break
+        for exp in (req.get("expected") or {}).values():
+            text = exp.get("src") if isinstance(exp, dict) and exp.get("status") == "value" else None
+            if isinstance(text, str):
+                code = compiled.get(text)
+                if code is None:
+                    try:
+                        code = compile(text, "<expected>", "eval")
+                    except Exception:
+                        code = text
+                    compiled[text] = code
+                exp["src"] = code
         pl = None
         if req.get("mut"):
+            mkey = json.dumps(req["mut"], sort_keys=True)
             try:
-                pl = plan(req["mut"])
+                if last_plan[0] != mkey:
+                    last_plan[:] = [None, None]
+                    last_plan[:] = [mkey, plan(req["mut"])]
+                pl = last_plan[1]
             except _Unsupported as u:
                 reply({"recs": [{"kind": "unsupported", "why": str(u)}]})
                 continue
@@ -1219,34 +1440,56 @@ class LLM:
         self.spent = 0.0
         self.calls = 0
         self.exhausted = False
+        self._call_state = threading.local()
         self.refused = False
         self.fail_since = None
         self.messages: list = []
         self.last_call_cost = 0.0
         self.lock = threading.Lock()
+        self.route_lock = threading.Lock()
 
     @property
     def model(self) -> str:
         return self.models[self.model_i]
 
-    def _next_url(self, why: str, retire: bool = False) -> bool:
-        if retire:
-            self.bad_urls.add(self.urls[self.url_i])
-        n = len(self.urls)
-        for step in range(1, n + 1):
-            i = (self.url_i + step) % n
-            if i != self.url_i and self.urls[i] not in self.bad_urls:
-                self.url_i = i
-                log("[LLM] %s; switching to %s" % (why, self.urls[i]))
-                return True
-        return False
+    @property
+    def refused(self) -> bool:
+        """Whether the current thread's call was refused by every endpoint and model (writers call in parallel)."""
+        return getattr(self._call_state, "refused", False)
 
-    def _next_model(self, why: str) -> bool:
-        if self.model_i + 1 >= len(self.models):
+    @refused.setter
+    def refused(self, value: bool) -> None:
+        self._call_state.refused = value
+
+    def _next_url(self, why: str, retire: bool = False, sent: int | None = None) -> bool:
+        """Move on from the endpoint `sent` (the one a failed request used); several writers may report the
+        same failure, and only the first of them switches."""
+        with self.route_lock:
+            sent = self.url_i if sent is None else sent
+            if retire:
+                self.bad_urls.add(self.urls[sent])
+            if self.url_i != sent and self.urls[self.url_i] not in self.bad_urls:
+                return True
+            n = len(self.urls)
+            for step in range(1, n + 1):
+                i = (sent + step) % n
+                if i != sent and self.urls[i] not in self.bad_urls:
+                    self.url_i = i
+                    log("[LLM] %s; switching to %s" % (why, self.urls[i]))
+                    return True
             return False
-        self.model_i += 1
-        log("[LLM] %s; switching to model %s" % (why, self.model))
-        return True
+
+    def _next_model(self, why: str, sent: int | None = None) -> bool:
+        """Move on from the model `sent`; a refusal another writer already acted on needs no second switch."""
+        with self.route_lock:
+            sent = self.model_i if sent is None else sent
+            if self.model_i != sent:
+                return True
+            if self.model_i + 1 >= len(self.models):
+                return False
+            self.model_i += 1
+            log("[LLM] %s; switching to model %s" % (why, self.model))
+            return True
 
     def _out_of_budget(self, detail: str) -> bool:
         low = detail.lower()
@@ -1330,7 +1573,27 @@ class LLM:
         return True
 
 
+    @staticmethod
+    def _read_body(resp, seconds: float) -> bytes:
+        """The whole response body, read within `seconds` in total (the socket timeout alone only bounds each
+        read, so a server that trickles bytes could otherwise hold a writer thread indefinitely)."""
+        read1 = getattr(resp, "read1", None)
+        if read1 is None:
+            return resp.read()
+        end = time.time() + seconds
+        chunks = []
+        while True:
+            chunk = read1(65536)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+            if time.time() > end:
+                raise TimeoutError("the response took longer than %.0f s to arrive" % seconds)
+
     def _attempts(self, max_tokens: int, messages: list, effort: str = ""):
+        import urllib.error
+        import urllib.request
+
         key = _api_key()
         if not key:
             log("[LLM] no API key")
@@ -1343,7 +1606,9 @@ class LLM:
             remaining = self.deadline - time.time()
             if remaining < 30:
                 return None, None
-            payload = {"model": self.model, "messages": self._payload_messages(messages), "max_tokens": max_tokens,
+            model_i, url_i = self.model_i, self.url_i
+            model, sent_url = self.models[model_i], self.urls[url_i]
+            payload = {"model": model, "messages": self._payload_messages(messages), "max_tokens": max_tokens,
                        "temperature": TEMPERATURE, "seed": SEED, "usage": {"include": True}}
             if effort:
                 payload["reasoning"] = {"effort": effort, "exclude": True}
@@ -1353,12 +1618,12 @@ class LLM:
             data = None
             status = None
             detail = ""
-            sent_url = self.urls[self.url_i]
             try:
                 req = urllib.request.Request(sent_url, data=body, headers=headers, method="POST")
                 with _hard_deadline(timeout + 5):
                     with urllib.request.urlopen(req, timeout=timeout) as resp:
-                        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                        raw = self._read_body(resp, timeout)
+                data = json.loads(raw.decode("utf-8", errors="replace"))
             except urllib.error.HTTPError as e:
                 status = e.code
                 try:
@@ -1373,7 +1638,7 @@ class LLM:
                 log("[LLM] request to %s failed: %s" % (sent_url, _fmt_exc(e)))
                 failures += 1
                 slow = isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
-                if not slow and isinstance(e, OSError) and self._next_url("endpoint unreachable"):
+                if not slow and isinstance(e, OSError) and self._next_url("endpoint unreachable", sent=url_i):
                     continue
                 if not self._retry_pause(failures):
                     return None, None
@@ -1391,7 +1656,7 @@ class LLM:
                 if not isinstance(cost, (int, float)):
                     resolved = data.get("model")
                     rate_model = (resolved if isinstance(resolved, str) and resolved in PRICES
-                                  else self.model if resolved in (None, "") else None)
+                                  else model if resolved in (None, "") else None)
                     pin, pout, pcache = PRICES.get(rate_model, (5.0, 25.0, 0.5))
                     prompt = usage.get("prompt_tokens") or 0
                     cached = ((usage.get("prompt_tokens_details") or {}).get("cached_tokens")) or 0
@@ -1424,7 +1689,7 @@ class LLM:
                         return None, None
             if status is not None:
                 low = detail.lower()
-                about_model = ("model" in low or self.model.lower() in low) and bool(_MODEL_REFUSED.search(low))
+                about_model = ("model" in low or model.lower() in low) and bool(_MODEL_REFUSED.search(low))
                 inflight = status == 402 and any(m in low for m in ("in_flight", "in-flight", "in flight"))
                 if (status == 402 and not inflight) or (status == 429 and self._out_of_budget(detail)):
                     log("[LLM] budget exhausted (HTTP %d): %s" % (status, detail[:200]))
@@ -1432,24 +1697,25 @@ class LLM:
                     return None, None
                 log("[LLM] HTTP %d from %s: %s" % (status, sent_url, detail[:200]))
                 if data is None and status in (400, 403, 404) and about_model:
-                    if self._next_model("model %s refused" % self.model):
+                    if self._next_model("model %s refused" % model, sent=model_i):
                         refused.clear()
                         continue
                     self.refused = True
                     return None, None
                 if data is None and status in (404, 405):
-                    if self._next_url("endpoint answered HTTP %d" % status, retire=True):
+                    if self._next_url("endpoint answered HTTP %d" % status, retire=True, sent=url_i):
                         continue
                     self.refused = True
                     return None, None
                 if data is None and status in (401, 403):
-                    refused.add(self.url_i)
+                    refused.add(url_i)
                     hops += 1
                     usable = [i for i, u in enumerate(self.urls) if u not in self.bad_urls]
                     if hops <= 2 * len(self.urls) * len(self.models):
-                        if any(i not in refused for i in usable) and self._next_url("endpoint answered HTTP %d" % status):
+                        if any(i not in refused for i in usable) and \
+                                self._next_url("endpoint answered HTTP %d" % status, sent=url_i):
                             continue
-                        if self._next_model("request refused by every endpoint"):
+                        if self._next_model("request refused by every endpoint", sent=model_i):
                             refused.clear()
                             continue
                     self.refused = True
@@ -1793,10 +2059,12 @@ class Run:
         self.case_order: dict = {}
         self.excluded: dict = {}
         self.best_files: dict = {}
+        self.suite_cache: dict = {}
         self.notes: list = []
         self.llm = LLM(MODEL, self.budget, self.deadline, summarizer=self.conversation_summary)
         self.cov_lines: dict = {}
         self.line_cases: dict = {}
+        self.file_cases: dict = {}
         self.mutants: dict = {}
         self.mutant_keys: set = set()
         self.mutant_status: dict = {}
@@ -1813,6 +2081,7 @@ class Run:
         self.pool_stop = False
         self.pool_paused = False
         self.pool_busy = 0
+        self.pool_running: dict = {}
         self.worker_roots: list = []
         self.import_fragile: dict = {}
         self.unreliable: set = set()
@@ -2339,10 +2608,12 @@ class Run:
         if module not in self.case_sources:
             return None
         good = [c for c in self.case_order.get(module, []) if "%s::%s" % (module, c) in self.records]
-        try:
-            new_cases = {n.name for n in ast.parse(new_source).body if isinstance(n, ast.FunctionDef)}
-        except SyntaxError:
-            new_cases = set()
+        # look at the new version as add_case_file will store it: broken blocks dropped, and not at all when
+        # nothing usable is left (then the old file simply stays)
+        fixed, _ = _repair_source(_adopt_test_names(new_source))
+        if not fixed.strip() or not re.search(r"(?m)^def case_\w+\s*\(", fixed):
+            return None
+        new_cases = {n.name for n in ast.parse(fixed).body if isinstance(n, ast.FunctionDef)}
         keep = [c for c in good if c not in new_cases]
         if not keep:
             return None
@@ -2388,29 +2659,54 @@ class Run:
             todo += ["%s::%s" % (name, c) for c in keep]
         if not todo:
             return report
-        first = self._record(todo, trace=True, reverse=False, seed="0")
-        second = self._record(todo, trace=False, reverse=True, seed="4217", clock_shift=CLOCK_SHIFT)
-        third = self._record(todo, trace=False, reverse=False, seed="91", clock_shift=CLOCK_SHIFT / 37.0,
-                             absent=True)
+        runs = (dict(trace=True, reverse=False, seed="0"),
+                dict(trace=False, reverse=True, seed="4217", clock_shift=CLOCK_SHIFT),
+                dict(trace=False, reverse=False, seed="91", clock_shift=CLOCK_SHIFT / 37.0, absent=True))
+        if _available_cpus() >= 3:
+            # three independent processes; with spare CPUs they need not wait for each other
+            results, failures = [None] * len(runs), []
+
+            def go(i):
+                try:
+                    results[i] = self._record(todo, **runs[i])
+                except BaseException as e:
+                    failures.append(e)
+            threads = [threading.Thread(target=go, args=(i,), daemon=True) for i in range(len(runs))]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            if failures:
+                raise failures[0]
+            first, second, third = results
+        else:
+            first, second, third = [self._record(todo, **kw) for kw in runs]
         for name, errs in first.get("__module_errors__", {}).items():
             if name in report:
                 report[name]["module"] += errs
                 self.module_problems.setdefault(name, []).extend(errs)
+        again = {}
         if not mended:
-            again = []
             for name, errs in (first.get("__module_errors__") or {}).items():
                 new, gone = _mend_imports(self.case_sources.get(name, ""), "\n".join(errs))
                 if new:
                     log("[MEND] %s: dropped import-broken names %s" % (name, gone))
                     self.case_sources[name] = new
                     self.module_problems.pop(name, None)
-                    again.append(name)
+                    again[name] = (gone, errs)
             if again:
-                report.update(self.record_modules(again, mended=True))
+                report.update(self.record_modules(sorted(again), mended=True))
+                for name, (gone, errs) in again.items():
+                    cause = re.sub(r"\s*\([^()]*\.py\)\s*$", "", errs[0].replace("importing the file failed: ", ""))
+                    why = "left out: it uses a name that cannot be imported (%s)" % _clip(cause, 240)
+                    for c in gone:
+                        self.case_problems["%s::%s" % (name, c)] = why
+                        report[name]["problems"].append("%s: %s" % (c, why))
+                        report[name]["cases"] += 1
         for key in todo:
             name, case = key.split("::")
             rep = report[name]
-            if name in self.module_problems:
+            if name in self.module_problems or name in again:
                 continue
             a, b, c = first.get(key), second.get(key), third.get(key)
             if a is None:
@@ -2514,14 +2810,15 @@ class Run:
         self.module_gen += 1
 
     def rebuild_coverage(self) -> None:
-        cov, lc = {}, {}
+        cov, lc, fc = {}, {}, {}
         for key, rec in self.records.items():
             if key in self.excluded:
                 continue
             for rel, line in rec.get("lines") or []:
                 cov.setdefault(rel, set()).add(line)
                 lc.setdefault((rel, line), set()).add(key)
-        self.cov_lines, self.line_cases = cov, lc
+                fc.setdefault(rel, set()).add(key)
+        self.cov_lines, self.line_cases, self.file_cases = cov, lc, fc
 
     def usable_keys(self, module: str) -> list:
         out = []
@@ -2568,6 +2865,7 @@ class Run:
 
     def build_suite(self) -> tuple:
         files, idmap = {}, {}
+        cache, used = self.suite_cache, {}
         for name in sorted(self.case_sources):
             if name in self.module_problems:
                 continue
@@ -2579,15 +2877,22 @@ class Run:
             recs = {k.split("::")[1]: self.records[k] for k in keys}
             if not self.pins_classes(name):
                 recs = {c: dict(r, cls=None) for c, r in recs.items()}
-            try:
-                src = _test_module_source(self.case_sources[name], topic, names, set(recs), recs)
-            except Exception as e:
-                log("[BUILD] %s: %s" % (name, _fmt_exc(e)))
-                continue
+            # the generated text depends only on these; most modules are unchanged from one build to the next
+            ckey = (self.case_sources[name], topic, tuple(sorted(names.items())),
+                    tuple((c, r["status"], r.get("src"), r.get("cls")) for c, r in sorted(recs.items())))
+            src = cache.get(ckey)
+            if src is None:
+                try:
+                    src = _test_module_source(self.case_sources[name], topic, names, set(recs), recs)
+                except Exception as e:
+                    log("[BUILD] %s: %s" % (name, _fmt_exc(e)))
+                    continue
+            used[ckey] = src
             tname = "test_" + topic
             files[tname + ".py"] = src
             for case in recs:
                 idmap["%s::%s" % (tname, names[case])] = "%s::%s" % (name, case)
+        self.suite_cache = used
         if files:
             files["conftest.py"] = CONFTEST_SRC
         return files, idmap
@@ -2721,9 +3026,14 @@ class Run:
             if not res["tests"]:
                 break
             if min(res["secs"], res.get("cpu") or res["secs"]) > self.suite_limit * 0.45:
-                self._trim_slow(res, idmap)
-                clean = 0
-                continue
+                if self._trim_slow(res, idmap):
+                    clean = 0
+                    self.rebuild_coverage()
+                    continue
+                # the tests themselves are within their share; the rest is start-up and collection, which
+                # dropping tests would not shorten
+                log("[CI] run %d: %.1fs, but only %.1fs in the tests themselves; nothing to trim" % (
+                    attempt + 1, res["secs"], sum(t["time"] for t in res["tests"].values())))
             clean += 1
             self.best_files = files
             if clean >= confirm_runs:
@@ -2745,17 +3055,21 @@ class Run:
 
 
 
-    def _trim_slow(self, res: dict, idmap: dict) -> None:
+    def _trim_slow(self, res: dict, idmap: dict) -> int:
+        """Drop the slowest tests until the tests' own time fits the budget; returns how many were dropped."""
         budget = self.suite_limit * 0.3
         times = sorted(((t["time"], tid) for tid, t in res["tests"].items()), reverse=True)
         total = sum(t for t, _ in times)
+        dropped = 0
         for t, tid in times:
             if total <= budget:
                 break
             key = idmap.get(tid)
-            if key:
+            if key and key not in self.excluded:
                 self.excluded[key] = "too slow"
                 total -= t
+                dropped += 1
+        return dropped
 
 
     def changed_files(self):
@@ -2801,28 +3115,22 @@ class Run:
         st = self.scope_text()
         files = list(dict.fromkeys(self.scope_files + sorted(self.cov_lines)))
         for rel in files:
-            path = os.path.join(self.src_root, rel)
-            try:
-                with open(path, errors="replace") as fh:
-                    tree = ast.parse(fh.read())
-            except Exception:
+            text, tree = _read_source(os.path.join(self.src_root, rel))
+            if tree is None:
                 continue
             covered = self.cov_lines.get(rel, set())
             in_scope = rel in self.scope_files
             if not covered and not in_scope:
                 continue
-            try:
-                with open(path, errors="replace") as fh:
-                    src_lines = fh.read().split("\n")
-            except OSError:
-                src_lines = []
+            src_lines = text.split("\n")
             for qual, fn in _functions(tree):
                 if any((_dotted(d) or "").endswith("overload") for d in fn.decorator_list):
                     continue
-                stmts = sorted(set(_stmt_lines(fn.body)))
+                spans = {n: (a, b) for n, a, b in _stmt_spans(fn.body)}
+                stmts = sorted(spans)
                 if not stmts:
                     continue
-                missed = [n for n in stmts if n not in covered]
+                missed = [n for n in stmts if not any(x in covered for x in range(spans[n][0], spans[n][1] + 1))]
                 if not missed:
                     continue
                 short = qual.split(".")[-1]
@@ -2891,7 +3199,7 @@ class Run:
             for line in m["scope_lines"]:
                 keys |= line_cases.get((m["file"], line), set())
         if not keys and m.get("module_level"):
-            keys = {k for (f, _), ks in list(line_cases.items()) if f == m["file"] for k in ks}
+            keys = set(self.file_cases.get(m["file"], ()))
         return sorted(k for k in keys if k in self.records and k not in self.excluded)
 
     def ensure_workers(self) -> None:
@@ -2971,12 +3279,15 @@ class Run:
             self.fast_stats[what] = round(self.fast_stats.get(what, 0) + amount, 1)
 
     def check_payload(self, keys: list):
-        expected, back = {}, {}
+        expected, back, pins = {}, {}, {}
         for k in keys:
             r = self.records[k]
-            cls = r.get("cls") if self.pins_classes(k.split("::")[0]) else None
-            expected[self.test_key(k)] = {"status": r["status"], "src": r.get("src"), "cls": cls}
-            back[self.test_key(k)] = k
+            module = k.split("::")[0]
+            if module not in pins:
+                pins[module] = self.pins_classes(module)
+            tk = self.test_key(k)
+            expected[tk] = {"status": r["status"], "src": r.get("src"), "cls": r.get("cls") if pins[module] else None}
+            back[tk] = k
         secs = sum(self.records[k].get("secs", 0.01) for k in keys)
         longest = max(self.records[k].get("secs", 0.01) for k in keys)
         return expected, back, secs, longest
@@ -3049,14 +3360,7 @@ class Run:
     def run_check_slow(self, m, root: str, keys: list) -> tuple:
         self.count("slow")
         try:
-            expected, back = {}, {}
-            for k in keys:
-                r = self.records[k]
-                cls = r.get("cls") if self.pins_classes(k.split("::")[0]) else None
-                expected[self.test_key(k)] = {"status": r["status"], "src": r.get("src"), "cls": cls}
-                back[self.test_key(k)] = k
-            secs = sum(self.records[k].get("secs", 0.01) for k in keys)
-            longest = max(self.records[k].get("secs", 0.01) for k in keys)
+            expected, back, secs, longest = self.check_payload(keys)
         except Exception:
             return "error", None
         path = os.path.join(root, m["file"]) if m else None
@@ -3116,6 +3420,10 @@ class Run:
         import heapq
         waiter = {"left": len(mutants)} if foreground else None
         with self.pool_cv:
+            if not foreground:
+                # a change already waiting in the background queue or being checked right now gets no second entry
+                busy = {e[2] for e in self.pool_queue if e[4] is None} | set(self.pool_running)
+                mutants = [m for m in mutants if m["id"] not in busy]
             for m in mutants:
                 self.pool_seq += 1
                 prio = (0, self.pool_seq) if foreground else (1,) + self.mutant_priority(m)
@@ -3155,6 +3463,7 @@ class Run:
                 skip = waiter is None and mid in self.mutant_status
                 if not skip:
                     self.pool_busy += 1
+                    self.pool_running[mid] = self.pool_running.get(mid, 0) + 1
             status = None
             if not skip and self.left() > 20:
                 try:
@@ -3167,6 +3476,10 @@ class Run:
             with self.pool_cv:
                 if not skip:
                     self.pool_busy -= 1
+                    if self.pool_running.get(mid, 0) <= 1:
+                        self.pool_running.pop(mid, None)
+                    else:
+                        self.pool_running[mid] -= 1
                 if status and status != "error":
                     current = self.mutant_status.get(mid)
                     if status == "killed" or current is None or full or not self.mutant_full.get(mid):
@@ -3419,10 +3732,8 @@ class Run:
         return item
 
     def usage_note(self, rel: str, line: int) -> str:
-        try:
-            with open(os.path.join(self.src_root, rel), errors="replace") as fh:
-                tree = ast.parse(fh.read())
-        except Exception:
+        tree = _read_source(os.path.join(self.src_root, rel))[1]
+        if tree is None:
             return ""
         names = set()
         for st in tree.body:
@@ -3434,10 +3745,8 @@ class Run:
             return ""
         uses, readers = [], set()
         for frel in self.package_files():
-            try:
-                with open(os.path.join(self.src_root, frel), errors="replace") as fh:
-                    ftree = ast.parse(fh.read())
-            except Exception:
+            ftree = _read_source(os.path.join(self.src_root, frel))[1]
+            if ftree is None:
                 continue
             spans = [(q, f.lineno, f.end_lineno or f.lineno) for q, f in _functions(ftree)]
             for node in ast.walk(ftree):
@@ -3454,10 +3763,8 @@ class Run:
             return ""
         callers = []
         for frel in self.package_files():
-            try:
-                with open(os.path.join(self.src_root, frel), errors="replace") as fh:
-                    ftree = ast.parse(fh.read())
-            except Exception:
+            ftree = _read_source(os.path.join(self.src_root, frel))[1]
+            if ftree is None:
                 continue
             spans = [(q, f.lineno, f.end_lineno or f.lineno) for q, f in _functions(ftree)]
             for node in ast.walk(ftree):
@@ -3705,7 +4012,7 @@ class Run:
         self.start_pool()
         t0 = time.time()
         self.wait_pool(SWEEP_SECONDS)
-        known = sum(1 for st in self.mutant_status.values() if st == "survived")
+        known = self.mutation_stats().get("survived", 0)  # a snapshot: the pool keeps adding statuses
         if self.pool_pending() and known < MUTANTS_PER_WRITER * len(self.writers) // 2:
             self.wait_pool(SWEEP_SECONDS)
         log("[MUT] %d changes over %d files after %.0fs: %s, checks %s" % (
@@ -4003,6 +4310,32 @@ class Run:
             patch = _manual_patch(self.test_rel, {k: v for k, v in files.items() if k not in initial})
         return patch
 
+_PARSED: dict = {}
+
+def _read_source(path: str) -> tuple:
+    """(text, tree) of a source file, cached while the file is unchanged; tree is None when it does not parse.
+
+    Callers only read the tree.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "", None
+    key = (path, st.st_mtime_ns, st.st_size)
+    hit = _PARSED.get(key)
+    if hit is None:
+        try:
+            with open(path, errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            return "", None
+        try:
+            tree = ast.parse(text)
+        except Exception:
+            tree = None
+        hit = _PARSED[key] = (text, tree)
+    return hit
+
 def _seal(d: str) -> None:
     try:
         os.chmod(d, 0o555)
@@ -4246,21 +4579,34 @@ def _functions(tree):
     visit(tree.body, "")
     return out
 
-def _stmt_lines(body):
+def _stmt_spans(body):
+    """(line, first, last) for each statement that runs code: it ran when any line from first to last did.
+
+    A multi-line statement reports the line of the part being evaluated (an `if (` header reports the line of
+    its condition), and `global`, `nonlocal` and bare constants compile to nothing, so they are left out.
+    """
     for node in body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Global, ast.Nonlocal)):
             continue
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
             continue
-        yield node.lineno
+        inner = getattr(node, "body", None)
+        if isinstance(inner, list) and inner and isinstance(inner[0], ast.stmt):
+            is_try = isinstance(node, (ast.Try, getattr(ast, "TryStar", ast.Try)))
+            last = max(node.lineno, inner[0].lineno - (0 if is_try else 1))
+        elif hasattr(ast, "Match") and isinstance(node, ast.Match) and node.cases:
+            last = max(node.lineno, node.cases[0].pattern.lineno)
+        else:
+            last = node.end_lineno or node.lineno
+        yield node.lineno, node.lineno, last
         for field in ("body", "orelse", "finalbody"):
             sub = getattr(node, field, None)
             if isinstance(sub, list):
-                yield from _stmt_lines(sub)
+                yield from _stmt_spans(sub)
         for h in getattr(node, "handlers", []) or []:
-            yield from _stmt_lines(h.body)
+            yield from _stmt_spans(h.body)
         for c in getattr(node, "cases", []) or []:
-            yield from _stmt_lines(c.body)
+            yield from _stmt_spans(c.body)
 
 def _parses(text: str) -> bool:
     try:
@@ -4318,18 +4664,6 @@ def _repair_source(source: str) -> tuple:
             removed += 1
     return (source, removed) if _parses(source) else ("", removed)
 
-def _without_cases(source: str, names) -> str:
-    names = set(names)
-    if not names:
-        return source
-    tree = ast.parse(source)
-    lines = source.split("\n")
-    for node in sorted((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names),
-                       key=lambda n: -n.lineno):
-        first = min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1
-        del lines[first:node.end_lineno]
-    return "\n".join(lines)
-
 def _mend_imports(source: str, error: str) -> tuple:
     name = re.search(r"cannot import name '(\w+)'", error)
     missing = re.search(r"No module named '([\w.]+)'", error)
@@ -4359,15 +4693,39 @@ def _mend_imports(source: str, error: str) -> tuple:
                 edits.append((node, keep))
     if not edits:
         return "", []
-    using = [n.name for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith("case_")
-             and any(isinstance(x, ast.Name) and x.id in gone for x in ast.walk(n))]
-    for node, keep in sorted(edits, key=lambda e: -e[0].lineno):
-        if keep:
+    # whatever refers to a dropped name goes too: cases, the helpers and classes they call, module-level
+    # values, and in turn everything that refers to those
+    tainted, dropped = set(gone), []
+    changed = True
+    while changed:
+        changed = False
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)) or any(node is d for d in dropped):
+                continue
+            if not any(isinstance(x, ast.Name) and x.id in tainted for x in ast.walk(node)):
+                continue
+            dropped.append(node)
+            changed = True
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                tainted.add(node.name)
+            else:
+                targets = list(getattr(node, "targets", None) or [])
+                if getattr(node, "target", None) is not None:
+                    targets.append(node.target)
+                for target in targets:
+                    tainted.update(x.id for x in ast.walk(target) if isinstance(x, ast.Name))
+    using = [n.name for n in dropped if isinstance(n, ast.FunctionDef) and n.name.startswith("case_")]
+    changes = [(node, keep) for node, keep in edits] + [(node, None) for node in dropped]
+    for node, keep in sorted(changes, key=lambda e: -e[0].lineno):
+        first = min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+        if keep is None:
+            del lines[first - 1:node.end_lineno]
+        elif keep:
             node.names = keep
             lines[node.lineno - 1:node.end_lineno] = [ast.unparse(node)]
         else:
             lines[node.lineno - 1:node.end_lineno] = ["" for _ in range(node.end_lineno - node.lineno + 1)]
-    return _without_cases("\n".join(lines), using), using
+    return "\n".join(lines), using
 
 def _contract_variant(source: bytes):
     text = source.decode("utf-8")
@@ -4459,6 +4817,10 @@ def _rewrite_variant(source: bytes):
                         nested.add(x.arg)
             elif isinstance(n, ast.ExceptHandler) and n.name:
                 nested.add(n.name)
+            elif type(n).__name__ in ("MatchAs", "MatchStar") and getattr(n, "name", None):
+                nested.add(n.name)  # a `case` pattern binds it: renaming the name elsewhere would split it
+            elif type(n).__name__ == "MatchMapping" and getattr(n, "rest", None):
+                nested.add(n.rest)
         comp_targets = {x.id for n in inner if isinstance(n, ast.comprehension)
                         for x in ast.walk(n.target) if isinstance(x, ast.Name)}
         assigned = {n.id for n in inner if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
@@ -4576,6 +4938,8 @@ def _test_names(case_source: str) -> dict:
             names[node.name] = name
     return names
 
+_SAME_AST: dict = {}
+
 def _test_module_source(case_source: str, topic: str, names: dict, keep: set, records: dict | None = None) -> str:
     tree = ast.parse(case_source)
     have_math = have_pytest = False
@@ -4596,6 +4960,9 @@ def _test_module_source(case_source: str, topic: str, names: dict, keep: set, re
     for i, node in enumerate(tree.body):
         if i == 0 and isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             continue
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+            header.insert(1, node)  # must come first, right after the docstring
+            continue
         if isinstance(node, ast.FunctionDef) and node.name.startswith("case_"):
             if node.name not in keep or node.name not in names:
                 continue
@@ -4611,15 +4978,16 @@ def _test_module_source(case_source: str, topic: str, names: dict, keep: set, re
         if key not in seen_imports:
             seen_imports.add(key)
             uniq.append(node)
-    helper = ast.parse(SAME_SRC).body
-    module = ast.Module(body=uniq + body + helper, type_ignores=[])
+    if "helper" not in _SAME_AST:
+        _SAME_AST["helper"] = ast.parse(SAME_SRC).body
+    module = ast.Module(body=uniq + body + _SAME_AST["helper"], type_ignores=[])
     ast.fix_missing_locations(module)
     text = ast.unparse(module) + "\n"
     compile(text, "<generated>", "exec")
     return text
 
 def _case_to_test(fn: ast.FunctionDef, rec: dict, name: str) -> ast.FunctionDef:
-    stmts = [copy.deepcopy(s) for s in fn.body]
+    stmts = list(fn.body)  # `fn` comes from a tree parsed for this one conversion, so its nodes can be reused
     doc = None
     if len(stmts) > 1 and isinstance(stmts[0], ast.Expr) and isinstance(stmts[0].value, ast.Constant) \
             and isinstance(stmts[0].value.value, str):
@@ -4747,9 +5115,13 @@ def _difference(a: dict, x) -> str:
     if x is None:
         return "; a later run did not finish"
     if x["status"] != a["status"]:
-        return "; one run %s, another %s" % (
-            "returned a value" if a["status"] == "value" else "raised " + str(a.get("exc")),
-            "returned a value" if x["status"] == "value" else "raised " + str(x.get("exc")))
+        def outcome(r):
+            if r["status"] == "value":
+                return "returned a value"
+            if r["status"] == "raises":
+                return "raised " + str(r.get("exc"))
+            return "could not be recorded (%s)" % (r.get("error") or r["status"])
+        return "; one run %s, another %s" % (outcome(a), outcome(x))
     s, t = a.get("src") or "", x.get("src") or ""
     i = next((k for k in range(min(len(s), len(t))) if s[k] != t[k]), min(len(s), len(t)))
     lo = max(0, i - 50)
@@ -5102,7 +5474,19 @@ def agent_main(input):
     return patch
 
 if __name__ == "__main__" and len(sys.argv) >= 3 and sys.argv[1] == "--tg-runner":
-    _runner_main(sys.argv[2])
+    _code = 0
+    try:
+        _runner_main(sys.argv[2])
+    except BaseException:
+        traceback.print_exc()
+        _code = 1
+    # a thread a case left running (a timer, a worker pool) must not keep the process alive
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.flush()
+        except Exception:
+            pass
+    os._exit(_code)
 if __name__ == "__main__" and len(sys.argv) >= 3 and sys.argv[1] == "--tg-server":
     _server_main(sys.argv[2])
 
