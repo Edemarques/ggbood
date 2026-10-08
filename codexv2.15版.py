@@ -84,6 +84,9 @@ CHECK_CASES_CAP = 30
 CHECK_CASES_CAP_FAST = 400
 CLOCK_SHIFT = 1e9
 FAIL_STREAK_SECONDS = 300
+DRAFT_WAIT_FRAC = 0.33
+ROUND_WAIT_FRAC = 0.12
+STRAGGLER_GRACE = 90.0
 CPU_WORKERS_CAP = 4
 
 SAME_SRC = '''
@@ -1979,6 +1982,7 @@ class Run:
         self.second_looked: set = set()
         self.kinds = 1
         self.writer_empty: set = set()
+        self.inflight: dict = {}
 
     def left(self) -> float:
         return self.deadline - time.time()
@@ -3482,28 +3486,66 @@ class Run:
                 return cand + ".py"
             k += 1
 
-    def write_round(self, jobs: list, label: str, effort: str = "") -> None:
-        t0 = time.time()
-        results = [(None, None)] * len(jobs)
+    def busy_writers(self) -> set:
+        """Writers whose reply from an earlier exchange is still on its way."""
+        return {w for w, job in self.inflight.items() if job["thread"].is_alive()}
 
-        def work(i, w, text, job_effort):
+    def write_round(self, jobs: list, label: str, effort: str = "", until: float = 0.0) -> None:
+        """Ask the writers in parallel and take in their case files.
+
+        A slow writer does not hold up the others: once enough of them have answered (or the round has run
+        long), the round goes on with the replies it has. The slow writer's call keeps running, it gets no new
+        job meanwhile, and its reply is taken in by a later round. With no jobs, the round only waits for such
+        a reply: until one arrives, or until `until` seconds have passed."""
+        t0 = time.time()
+        self.llm.fail_since = None  # time between rounds, when no call runs, is no failure streak
+        jobs = [job if len(job) == 3 else (job[0], job[1], "") for job in jobs]
+        busy = self.busy_writers()
+        jobs = [job for job in jobs if job[0] not in busy]
+
+        def work(w, text, job_effort, slot):
             try:
-                _transcript("user", "[writer %d, %s]\n%s" % (w + 1, label, text))
-                results[i] = self.llm.ask(text, conv=self.writers[w], effort=job_effort or effort)
-                _transcript("assistant", "[writer %d, %s]\n%s" % (w + 1, label, results[i][0]))
+                _transcript("user", "[writer %d, %s]\n%s" % (w + 1, slot["label"], text))
+                slot["result"] = self.llm.ask(text, conv=self.writers[w], effort=job_effort or effort)
+                _transcript("assistant", "[writer %d, %s]\n%s" % (w + 1, slot["label"], slot["result"][0]))
             except Exception:
                 log("[LLM] writer %d failed: %s" % (w + 1, traceback.format_exc()[-300:]))
 
-        jobs = [job if len(job) == 3 else (job[0], job[1], "") for job in jobs]
-        threads = [threading.Thread(target=work, args=(i, w, text, job_effort), daemon=True)
-                   for i, (w, text, job_effort) in enumerate(jobs)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=max(5.0, self.left()))
-        log("[WRITE] %s: %d writers answered in %.0fs" % (label, sum(1 for r in results if r[0]), time.time() - t0))
+        for w, text, job_effort in jobs:
+            slot = {"label": label, "result": (None, None), "t0": t0}
+            slot["thread"] = threading.Thread(target=work, args=(w, text, job_effort, slot), daemon=True)
+            self.inflight[w] = slot
+            slot["thread"].start()
+        n = len(jobs)
+        mine = [w for w, _, _ in jobs]
+        quorum = -(-n // 2)
+        hard = self.wall * (DRAFT_WAIT_FRAC if label == "draft" else ROUND_WAIT_FRAC)
+        t_quorum = None
+        while True:
+            pending = [w for w in self.inflight if self.inflight[w]["thread"].is_alive()]
+            answered = [w for w in mine if w not in pending and self.inflight[w]["result"][0]]
+            if self.left() <= 5 or (mine and not any(w in pending for w in mine)):
+                break
+            elapsed = time.time() - t0
+            if not mine and (len(pending) < len(self.inflight) or elapsed >= until):
+                break
+            if mine and t_quorum is None and len(answered) >= quorum:
+                t_quorum = elapsed
+            if answered and elapsed >= hard:
+                break
+            if t_quorum is not None and elapsed >= t_quorum + max(STRAGGLER_GRACE, 0.5 * t_quorum):
+                break
+            time.sleep(0.5)
+        done = [(w, self.inflight.pop(w)) for w in sorted(self.inflight) if not self.inflight[w]["thread"].is_alive()]
+        late = [w for w, slot in done if slot["label"] != label]
+        waiting = sorted(w + 1 for w in self.inflight)
+        log("[WRITE] %s: %d writers answered in %.0fs%s%s" % (
+            label, sum(1 for w, slot in done if slot["label"] == label and slot["result"][0]), time.time() - t0,
+            "; late replies from writers %s" % [w + 1 for w in late] if late else "",
+            "; still waiting for writers %s" % waiting if waiting else ""))
+        replies = [(w, slot["label"], slot["result"]) for w, slot in done]
         written, files_of = [], {}
-        for (w, _, _), (reply, finish) in zip(jobs, results):
+        for w, reply_label, (reply, finish) in replies:
             notes = []
             if not reply:
                 self.writer_notes[w] = notes + list(self.validation_pending.get(w) or [])
@@ -3512,7 +3554,7 @@ class Run:
             blocks, _done, truncated = _parse_reply(reply, finish)
             if any(kind in ("case", "case-unnamed") for kind, _, _ in blocks):
                 self.writer_empty.discard(w)
-            elif label == "draft":
+            elif reply_label == "draft":
                 self.writer_empty.add(w)
                 notes.append("Your reply contained no case files, only text, so nothing of your share has been "
                              "saved yet. Write the case files now as ```python cases_<topic>.py blocks.")
@@ -3670,6 +3712,9 @@ class Run:
 
     def round_jobs(self, rnd: int) -> list:
         n = len(self.writers)
+        free = [w for w in range(n) if w not in self.busy_writers()]
+        if not free:
+            return []
         self.drop_import_fragile()
         pins = self.pins_any_classes()
         alive = [m for m in self.mutants.values() if self.mutant_status.get(m["id"]) == "survived"
@@ -3699,7 +3744,7 @@ class Run:
             else:
                 units.append(m)
 
-        capacity = MUTANTS_PER_WRITER * n
+        capacity = MUTANTS_PER_WRITER * len(free)
         per_func, picked, taken = {}, [], set()
         tiers = {}
         for u in units:
@@ -3726,8 +3771,8 @@ class Run:
                     v[w] = v.get(w, 0) + k
             votes.append(v)
         need = -(-len(picked) // MUTANTS_PER_WRITER)
-        totals = {w: sum(v.get(w, 0) for v in votes) for w in range(n)}
-        chosen = sorted(range(n), key=lambda w: (-totals[w], w))[:need]
+        totals = {w: sum(v.get(w, 0) for v in votes) for w in free}
+        chosen = sorted(free, key=lambda w: (-totals[w], w))[:need]
         order = sorted(zip(picked, votes), key=lambda uv: not all(
             self.shown_count.get(m["id"], 0) for m in members(uv[0])))
         def assign(pool):
@@ -3750,9 +3795,9 @@ class Run:
         repeated, batches = assign(chosen)
         if repeated and n <= 8:
             import itertools
-            fixing = {w for w in range(n) if self.needs_fixing(w)}
+            fixing = {w for w in free if self.needs_fixing(w)}
             calls = len(set(chosen) | fixing)
-            for pool in itertools.combinations(range(n), need):
+            for pool in itertools.combinations(free, need):
                 if len(set(pool) | fixing) != calls:
                     continue
                 count, trial = assign(pool)
@@ -3770,13 +3815,13 @@ class Run:
                 short = fn.group(1).split(".")[-1] if fn else ""
                 owner = next((w for w in range(n) if short and re.search(r"\b%s\b" % re.escape(short), self.shares[w])),
                              None)
-                pool = chosen or [0]
+                pool = chosen or free[:1]
                 if owner not in pool:
                     owner = pool[i % len(pool)]
                 cov[owner].append(item)
         jobs = []
         shown_total = 0
-        for w in range(n):
+        for w in free:
             batch = batches[w]
             if not batch and not cov[w] and not self.needs_fixing(w):
                 continue
@@ -3883,6 +3928,9 @@ class Run:
                 jobs = self.round_jobs(rnd)
             if not jobs and self.more_kinds():
                 jobs = self.round_jobs(rnd)
+            if not jobs and self.busy_writers():
+                self.write_round([], "round %d" % rnd, until=max(10.0, (ROUNDS_UNTIL - self.frac()) * self.wall))
+                continue
             if not jobs:
                 break
             this_round = [m for m in self.mutants.values()
@@ -3908,6 +3956,11 @@ class Run:
                 rnd, time.time() - t0, self.mutation_stats(), gained, len(this_round)))
             if rnd >= 2 and gained <= 2 and not self.more_kinds():
                 break
+        while self.busy_writers() and self.frac() < ROUNDS_UNTIL:
+            # a reply that comes after its round still brings cases; wait for it while rounds could still run
+            self.write_round([], "late replies", until=(ROUNDS_UNTIL - self.frac()) * self.wall)
+        if self.inflight:
+            self.write_round([], "late replies", until=0.0)
         alive = [m for m in self.mutants.values() if self.mutant_status.get(m["id"]) == "survived"]
         for m in sorted(alive, key=self.mutant_priority)[:150]:
             now = [x for x in m["show"].split("\n") if x.strip().startswith("now:")]
