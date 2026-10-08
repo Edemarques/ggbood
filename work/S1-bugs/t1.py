@@ -1,0 +1,31 @@
+import os, sys, subprocess, tempfile, json, importlib.util
+base = os.path.expanduser("~/tgopt/S1-bugs")
+os.makedirs(base, exist_ok=True)
+spec = importlib.util.spec_from_file_location("agent", "/mnt/c/Users/Administrator/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/scratch-workspaces/e275ff1c-f08a-41d9-8870-2551a0569dde/d8f32c1c-bde9-4d74-a4d5-921ffbabcb67/scratch-2026-10-08-2e3d58/codexv2.12_orig.py")
+agent = importlib.util.module_from_spec(spec); spec.loader.exec_module(agent)
+
+d = tempfile.mkdtemp(dir=base)
+# fake installed plugin dist
+site = os.path.join(d, "site"); os.makedirs(site)
+with open(os.path.join(site, "fakeplug.py"), "w") as f:
+    f.write("def pytest_configure(config):\n    pass\n")
+di = os.path.join(site, "fakeplug-1.0.dist-info"); os.makedirs(di)
+open(os.path.join(di, "METADATA"), "w").write("Metadata-Version: 2.1\nName: fakeplug\nVersion: 1.0\n")
+open(os.path.join(di, "top_level.txt"), "w").write("fakeplug\n")
+open(os.path.join(di, "entry_points.txt"), "w").write("[pytest11]\nfakeplug = fakeplug\n")
+open(os.path.join(di, "RECORD"), "w").write("fakeplug.py,,\n")
+# optional modules computed by agent in a subprocess with site on path
+code = "import sys; sys.path.insert(0, %r); import importlib.util as u; s=u.spec_from_file_location('a', %r); a=u.module_from_spec(s); s.loader.exec_module(a); print('fakeplug' in a._optional_modules([], ['mylib']))" % (site, spec.origin)
+print("fakeplug considered optional:", subprocess.run([sys.executable, "-c", code], capture_output=True, text=True).stdout.strip())
+absent = os.path.join(d, "absent"); os.makedirs(absent)
+open(os.path.join(absent, "sitecustomize.py"), "w").write(agent._ABSENT_SRC % json.dumps(["fakeplug", "numpy"]))
+tdir = os.path.join(d, "tests"); os.makedirs(tdir)
+open(os.path.join(tdir, "test_a.py"), "w").write("def test_x():\n    assert 1\n")
+env = dict(os.environ, PYTHONPATH=absent + os.pathsep + site)
+r = subprocess.run([sys.executable, "-m", "pytest", tdir, "-q", "-p", "no:cacheprovider", "-c", os.devnull], env=env, capture_output=True, text=True)
+print("pytest rc with hidden plugin:", r.returncode)
+print(r.stdout[-600:], r.stderr[-600:])
+r = subprocess.run([sys.executable, "-c", "import importlib.util; print(importlib.util.find_spec('numpy'))"], env=env, capture_output=True, text=True)
+print("find_spec under absent hook:", r.returncode, r.stdout.strip(), r.stderr.strip()[-200:])
+r = subprocess.run([sys.executable, "-c", "import importlib.util; print(importlib.util.find_spec('nonexistent_mod_xyz'))"], env=env, capture_output=True, text=True)
+print("find_spec real absent:", r.returncode, r.stdout.strip())

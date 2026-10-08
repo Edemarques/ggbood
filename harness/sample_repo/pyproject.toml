@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minilib"
+version = "1.4.0"
+description = "Small helpers for durations, sizes, rate limiting and text tables"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6"]
