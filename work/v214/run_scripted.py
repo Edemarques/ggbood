@@ -11,6 +11,7 @@ os.chdir(app)
 spec=importlib.util.spec_from_file_location("agent_under_test",agent_path); A=importlib.util.module_from_spec(spec); spec.loader.exec_module(A)
 cases=open(cases_file).read()
 DRAFT="```python cases_main.py\n"+cases+"\n```\n"
+T0=time.time()
 run=A.Run(st)
 def _attempts(llm, max_tokens, messages, effort=""):
     text=messages[-1]["content"] if messages else ""
@@ -28,4 +29,8 @@ res={"stats":run.mutation_stats(),"mutants":[]}
 for m in run.mutants.values():
     res["mutants"].append({"id":m["id"],"file":m["file"],"line":m["line"],"kind":m["kind"],"start":m["start"],"end":m["end"],"repl":m["repl"].decode(),"status":run.mutant_status.get(m["id"])})
 json.dump(res,open(os.path.join(out,"agent_mutants.json"),"w"),indent=0)
-print("STATS",res["stats"])
+res["unjudged"]=sum(1 for m in run.mutants.values() if run.mutant_status.get(m["id"]) not in ("killed","survived","no-case"))
+res["fast_stats"]=run.fast_stats; res["secs"]=round(time.time()-T0,1)
+res["tests"]=len(re.findall(r"(?m)^\+def test_", patch))
+json.dump(res,open(os.path.join(out,"agent_mutants.json"),"w"),indent=0)
+print("STATS",json.dumps({k:v for k,v in res.items() if k!="mutants"}))
