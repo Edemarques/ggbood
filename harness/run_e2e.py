@@ -3,7 +3,8 @@
 usage: python run_e2e.py AGENT.py OUT_DIR [AGENT_TIMEOUT_SECONDS]
 
 Copies the sample repository to OUT_DIR/repo (as a git repository), runs Run.execute() and
-Run.finalize() with harness/fake_llm.py answering every model call, and writes:
+Run.finalize() with harness/fake_llm.py answering every model call (fake_llm_lanes.py for agents of the
+codexv2.12_ lineage, which talk through one conversation per lane), and writes:
   OUT_DIR/patch.diff     the patch the agent returned
   OUT_DIR/log.txt        the agent log
   OUT_DIR/debug/         TG_DEBUG_DIR dump (cases, problems, mutants)
@@ -45,6 +46,7 @@ def main():
                        "TG_DEBUG_DIR": os.path.join(out, "debug")})
     sys.path.insert(0, HERE)
     import fake_llm
+    import fake_llm_lanes
 
     spec = importlib.util.spec_from_file_location("agent_under_test", agent_path)
     agent = importlib.util.module_from_spec(spec)
@@ -63,7 +65,10 @@ def main():
     t0 = time.time()
     with contextlib.redirect_stdout(Tee()):
         run = agent.Run(statement)
-        fake = fake_llm.FakeLLM(agent, run).install()
+        if hasattr(agent.Run, "converse"):
+            fake = fake_llm_lanes.FakeLanesLLM(agent).install(run)
+        else:
+            fake = fake_llm.FakeLLM(agent, run).install()
         try:
             run.execute()
         except Exception:
@@ -91,7 +96,7 @@ def main():
     summary = {"agent": os.path.basename(agent_path), "secs": round(secs, 1), "tests": tests,
                "files": len(re.findall(r"(?m)^diff --git", patch)), "applied": applied, "pytest": res,
                "llm_calls": run.llm.calls, "asks": fake.asks, "mutants": len(run.mutants),
-               "mutation": run.mutation_stats(), "fast_stats": run.fast_stats,
+               "mutation": run.mutation_stats(), "fast_stats": getattr(run, "fast_stats", None),
                "excluded": len(run.excluded), "records": len(run.records)}
     with open(os.path.join(out, "summary.json"), "w") as fh:
         json.dump(summary, fh, indent=1)

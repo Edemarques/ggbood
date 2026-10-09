@@ -741,7 +741,11 @@ def llm_trickling_response_bounded():
             t0 = time.time()
             # the call's own limit is max(20, remaining - 15); a deadline 33 s away makes it 20 s
             llm.deadline = time.time() + 33
-            box["reply"] = llm.ask("hi", conv=[{"role": "system", "content": "s"}])[0]
+            if "conv" in agent.LLM.ask.__code__.co_varnames:
+                box["reply"] = llm.ask("hi", conv=[{"role": "system", "content": "s"}])[0]
+            else:  # codexv2.12_ lineage: one conversation per LLM object
+                llm.messages = [{"role": "system", "content": "s"}]
+                box["reply"] = llm.ask("hi")[0]
             box["secs"] = time.time() - t0
         t = threading.Thread(target=w, daemon=True)
         t.start()
