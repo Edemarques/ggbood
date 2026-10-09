@@ -759,6 +759,42 @@ def llm_trickling_response_bounded():
 
 
 @check
+def relay_model_priced_as():
+    """A relay alias of a priced model (personal/gpt-6-luna) must not be billed at the $5/$25 fallback when
+    TG_PRICE_AS names the model behind it, whatever cost the relay quotes."""
+    os.environ.pop("SANDBOX_PROXY_URL", None)
+    agent = load()
+    agent.LLM._retry_pause = lambda self, failures: False
+
+    def spend(quote):
+        usage = {"prompt_tokens": 20000, "completion_tokens": 6000}
+        if quote is not None:
+            usage["cost"] = quote
+        body = json.dumps({"model": "personal/gpt-6-luna", "usage": usage,
+                           "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}).encode()
+        urllib.request.urlopen = lambda req, timeout=None: _Resp(body)
+        try:
+            llm = agent.LLM("personal/gpt-6-luna", 1.0, time.time() + 1000)
+            if "conv" in agent.LLM.ask.__code__.co_varnames:
+                llm.ask("hi", conv=[{"role": "system", "content": "s"}])
+            else:
+                llm.messages = [{"role": "system", "content": "s"}]
+                llm.ask("hi")
+        finally:
+            urllib.request.urlopen = REAL_URLOPEN
+        return round(llm.spent, 6)
+    unpriced = spend(None)
+    os.environ["TG_PRICE_AS"] = "openai/gpt-6-luna"
+    try:
+        priced, quoted = spend(None), spend(3.0)
+    finally:
+        os.environ.pop("TG_PRICE_AS")
+    # 20000 in / 6000 out: $0.25 at the fallback price, $0.005 at openai/gpt-6-luna's
+    ok = unpriced == 0.25 and priced == quoted == 0.005
+    return ok, "spent unset=%s TG_PRICE_AS=%s with a relay quote=%s" % (unpriced, priced, quoted)
+
+
+@check
 def verify_suite_overhead_loop():
     """A suite slow only because of pytest start-up must be accepted, not re-run 8 times (S5-perf/verify)."""
     agent = load()

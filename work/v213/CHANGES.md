@@ -53,3 +53,11 @@
 - 生成测试模块：去掉多余的 deepcopy、缓存 `SAME_SRC` 的 AST（输出逐字节相同，单次快约 22%），
   `build_suite` 对未变化的模块直接复用。
 - `_to_src` 带长度预算，超大结果尽早放弃；`_public_class_path` 缓存模块列表；`tmp_path` 检测不再用 `inspect.signature`。
+
+## 计费（之后追加）
+
+- 新增环境变量 `TG_PRICE_AS`：用中转站别名测试时（如 `TG_MODEL=personal/gpt-6-luna`），设
+  `TG_PRICE_AS=openai/gpt-6-luna`，按该模型的价格和返回的 token 数计费，忽略中转站自己报的 cost。
+  不设时行为不变。原因：不在 `PRICES` 里的模型名按 $5/$25 每百万 token 计费，比 gpt-6-luna 贵 50 倍，
+  一次 2 万输入 + 6 千输出的调用就记 $0.25，$0.29 预算一两次调用就用完。
+- `[SETUP]` 日志行显示计费方式；模型没有价格时会提示。

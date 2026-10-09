@@ -1653,8 +1653,13 @@ class LLM:
                     text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
                 usage = data.get("usage") or {}
                 cost = usage.get("cost")
+                price_as = (os.getenv("TG_PRICE_AS") or "").strip()
+                if price_as in PRICES:
+                    # TG_PRICE_AS names the priced model behind a relay or alias (personal/gpt-6-luna ->
+                    # openai/gpt-6-luna): bill the reported tokens at that model's price, whatever the relay quotes
+                    cost = None
                 if not isinstance(cost, (int, float)):
-                    resolved = data.get("model")
+                    resolved = price_as if price_as in PRICES else data.get("model")
                     rate_model = (resolved if isinstance(resolved, str) and resolved in PRICES
                                   else model if resolved in (None, "") else None)
                     pin, pout, pcache = PRICES.get(rate_model, (5.0, 25.0, 0.5))
@@ -2142,8 +2147,12 @@ class Run:
         m = re.search(r"finish in under (\d+(?:\.\d+)?) seconds", st)
         if m:
             self.suite_limit = float(m.group(1))
-        log("[SETUP] repo=%s tests=%s suite_limit=%.0fs wall=%.0fs budget=$%.2f model=%s" % (
-            self.repo, self.test_rel, self.suite_limit, self.wall, self.budget, MODEL))
+        price_as = (os.getenv("TG_PRICE_AS") or "").strip()
+        pricing = (" priced as %s" % price_as if price_as in PRICES else "" if MODEL in PRICES else
+                   " (no price for it: billed at $5/$25 per M tokens unless the endpoint quotes a cost; "
+                   "set TG_PRICE_AS)")
+        log("[SETUP] repo=%s tests=%s suite_limit=%.0fs wall=%.0fs budget=$%.2f model=%s%s" % (
+            self.repo, self.test_rel, self.suite_limit, self.wall, self.budget, MODEL, pricing))
         for d in (self.src_root, self.cases_dir, self.record_dir):
             os.makedirs(d, exist_ok=True)
             os.chmod(d, 0o755)

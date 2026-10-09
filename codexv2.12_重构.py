@@ -1185,6 +1185,16 @@ def provider_usage_cost(usage, resolved_model, requested_model, prices, unit=100
     return float(cost) if math.isfinite(cost) else sys.float_info.max
 
 
+def _call_cost(usage, resolved_model, requested_model):
+    alias = (os.getenv("TG_PRICE_AS") or "").strip()
+    if alias in PRICES:
+        # TG_PRICE_AS names the priced model behind a relay or alias (personal/gpt-6-luna -> openai/gpt-6-luna):
+        # bill the reported tokens at that model's price, whatever the relay quotes or calls the model
+        usage = {k: v for k, v in usage.items() if k != "cost"}
+        resolved_model = requested_model = alias
+    return provider_usage_cost(usage, resolved_model, requested_model, PRICES)
+
+
 def usage_cost_total(previous, cost):
     """Accumulate a validated cost without overflowing stored spend."""
     total = previous + cost
@@ -1554,7 +1564,7 @@ class LLM:
                 text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
             usage = data.get("usage")
             usage = usage if isinstance(usage, dict) else {}
-            cost = provider_usage_cost(usage, data.get("model"), self.model, PRICES)
+            cost = _call_cost(usage, data.get("model"), self.model)
             self.spent = usage_cost_total(self.spent, float(cost))
             self.last_call_cost = cost
             self.calls += 1
@@ -2012,8 +2022,12 @@ class Run:
         if p and p != "." and not p.startswith(".."):
             self.test_rel = p
         self.snapshot_repo()
-        log("[SETUP] repo=%s tests=%s suite_limit=%.0fs wall=%.0fs budget=$%.2f model=%s" % (
-            self.repo, self.test_rel, self.suite_limit, self.wall, self.budget, MODEL))
+        price_as = (os.getenv("TG_PRICE_AS") or "").strip()
+        pricing = (" priced as %s" % price_as if price_as in PRICES else "" if MODEL in PRICES else
+                   " (no price for it: billed at $5/$25 per M tokens unless the endpoint quotes a cost; "
+                   "set TG_PRICE_AS)")
+        log("[SETUP] repo=%s tests=%s suite_limit=%.0fs wall=%.0fs budget=$%.2f model=%s%s" % (
+            self.repo, self.test_rel, self.suite_limit, self.wall, self.budget, MODEL, pricing))
         for d in (self.src_root, self.cases_dir, self.record_dir):
             os.makedirs(d, exist_ok=True)
             os.chmod(d, 0o755)
