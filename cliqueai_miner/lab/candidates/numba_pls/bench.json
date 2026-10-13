@@ -1,0 +1,486 @@
+{
+ "import": 0.4513120319998052,
+ "warmup": 7.537500005128095e-05,
+ "runs": [
+  {
+   "graph": "g300_p735",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 22,
+   "status": "ok",
+   "time": 0.9601726749997397
+  },
+  {
+   "graph": "g300_p735",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 22,
+   "status": "ok",
+   "time": 0.9600938820003648
+  },
+  {
+   "graph": "g300_p735",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 22,
+   "status": "ok",
+   "time": 0.9600933319998148
+  },
+  {
+   "graph": "g300_p735",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 22,
+   "status": "ok",
+   "time": 3.960195661000398
+  },
+  {
+   "graph": "g300_p735",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 22,
+   "status": "ok",
+   "time": 3.9629568629998175
+  },
+  {
+   "graph": "g300_p735",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 22,
+   "status": "ok",
+   "time": 3.9611247500006357
+  },
+  {
+   "graph": "g500_p500",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 13,
+   "status": "ok",
+   "time": 0.96030467699984
+  },
+  {
+   "graph": "g500_p500",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 13,
+   "status": "ok",
+   "time": 0.9602235089996611
+  },
+  {
+   "graph": "g500_p500",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 13,
+   "status": "ok",
+   "time": 0.960138884999651
+  },
+  {
+   "graph": "g500_p500",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 13,
+   "status": "ok",
+   "time": 3.9601963059994887
+  },
+  {
+   "graph": "g500_p500",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 13,
+   "status": "ok",
+   "time": 3.9601689880000777
+  },
+  {
+   "graph": "g500_p500",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 13,
+   "status": "ok",
+   "time": 3.960587163999662
+  },
+  {
+   "graph": "g500_p735",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 25,
+   "status": "ok",
+   "time": 0.9613779050005178
+  },
+  {
+   "graph": "g500_p735",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 25,
+   "status": "ok",
+   "time": 0.9607516940004643
+  },
+  {
+   "graph": "g500_p735",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 25,
+   "status": "ok",
+   "time": 0.961311800000658
+  },
+  {
+   "graph": "g500_p735",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 25,
+   "status": "ok",
+   "time": 3.9611899969995648
+  },
+  {
+   "graph": "g500_p735",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 25,
+   "status": "ok",
+   "time": 3.9601929919999748
+  },
+  {
+   "graph": "g500_p735",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 25,
+   "status": "ok",
+   "time": 3.9601597860000766
+  },
+  {
+   "graph": "g500_p900",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 56,
+   "status": "ok",
+   "time": 0.9602622170004906
+  },
+  {
+   "graph": "g500_p900",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 56,
+   "status": "ok",
+   "time": 0.9601719009997396
+  },
+  {
+   "graph": "g500_p900",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 56,
+   "status": "ok",
+   "time": 0.960145046999969
+  },
+  {
+   "graph": "g500_p900",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 56,
+   "status": "ok",
+   "time": 3.9601818349992755
+  },
+  {
+   "graph": "g500_p900",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 56,
+   "status": "ok",
+   "time": 3.9612778110004
+  },
+  {
+   "graph": "g500_p900",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 56,
+   "status": "ok",
+   "time": 3.9642303559994616
+  },
+  {
+   "graph": "g700_p735",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 27,
+   "status": "ok",
+   "time": 0.9603631450008834
+  },
+  {
+   "graph": "g700_p735",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 27,
+   "status": "ok",
+   "time": 0.9602649589996872
+  },
+  {
+   "graph": "g700_p735",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 27,
+   "status": "ok",
+   "time": 0.960192042000017
+  },
+  {
+   "graph": "g700_p735",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 27,
+   "status": "ok",
+   "time": 3.960203389000526
+  },
+  {
+   "graph": "g700_p735",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 27,
+   "status": "ok",
+   "time": 3.9602249220006343
+  },
+  {
+   "graph": "g700_p735",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 27,
+   "status": "ok",
+   "time": 3.966171070999735
+  },
+  {
+   "graph": "g900_p300",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 9,
+   "status": "ok",
+   "time": 0.9606076740001299
+  },
+  {
+   "graph": "g900_p300",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 9,
+   "status": "ok",
+   "time": 0.9610464090001187
+  },
+  {
+   "graph": "g900_p300",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 9,
+   "status": "ok",
+   "time": 0.9602207749994704
+  },
+  {
+   "graph": "g900_p300",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 9,
+   "status": "ok",
+   "time": 3.9601826750003966
+  },
+  {
+   "graph": "g900_p300",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 9,
+   "status": "ok",
+   "time": 3.960230390000106
+  },
+  {
+   "graph": "g900_p300",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 9,
+   "status": "ok",
+   "time": 3.964221135000116
+  },
+  {
+   "graph": "g900_p735",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 29,
+   "status": "ok",
+   "time": 0.9603962810006124
+  },
+  {
+   "graph": "g900_p735",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 29,
+   "status": "ok",
+   "time": 0.9602521169999818
+  },
+  {
+   "graph": "g900_p735",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 29,
+   "status": "ok",
+   "time": 0.9603389880003306
+  },
+  {
+   "graph": "g900_p735",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 29,
+   "status": "ok",
+   "time": 3.96086199399997
+  },
+  {
+   "graph": "g900_p735",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 29,
+   "status": "ok",
+   "time": 3.9607740360006574
+  },
+  {
+   "graph": "g900_p735",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 29,
+   "status": "ok",
+   "time": 3.960248198000045
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 47,
+   "status": "ok",
+   "time": 0.9602878690002399
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 47,
+   "status": "ok",
+   "time": 0.9601758569997401
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 47,
+   "status": "ok",
+   "time": 0.960204474999955
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 47,
+   "status": "ok",
+   "time": 3.960241601999769
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 47,
+   "status": "ok",
+   "time": 3.960235030000149
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 47,
+   "status": "ok",
+   "time": 3.9602050559997224
+  },
+  {
+   "graph": "test298",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 22,
+   "status": "ok",
+   "time": 0.9612894510000842
+  },
+  {
+   "graph": "test298",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 22,
+   "status": "ok",
+   "time": 0.961364247000347
+  },
+  {
+   "graph": "test298",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 22,
+   "status": "ok",
+   "time": 0.9612635630001023
+  },
+  {
+   "graph": "test298",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 22,
+   "status": "ok",
+   "time": 3.9613463019995834
+  },
+  {
+   "graph": "test298",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 22,
+   "status": "ok",
+   "time": 3.9602174520005065
+  },
+  {
+   "graph": "test298",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 22,
+   "status": "ok",
+   "time": 3.960155902000224
+  },
+  {
+   "graph": "test493",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 25,
+   "status": "ok",
+   "time": 0.9602627169997504
+  },
+  {
+   "graph": "test493",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 25,
+   "status": "ok",
+   "time": 0.9612543359999108
+  },
+  {
+   "graph": "test493",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 25,
+   "status": "ok",
+   "time": 0.961441353999362
+  },
+  {
+   "graph": "test493",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 25,
+   "status": "ok",
+   "time": 3.9616868310004065
+  },
+  {
+   "graph": "test493",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 25,
+   "status": "ok",
+   "time": 3.9602625670004272
+  },
+  {
+   "graph": "test493",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 25,
+   "status": "ok",
+   "time": 3.960204908000378
+  }
+ ]
+}

@@ -1,0 +1,5 @@
+__pycache__/
+__mccache__/
+*.so
+lab/graphs/
+lab/graphs_hard/
