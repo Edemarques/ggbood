@@ -1,0 +1,150 @@
+{
+ "import": 0.010939629999484168,
+ "warmup": 0.00024759600000834325,
+ "runs": [
+  {
+   "graph": "g900_p850",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 47,
+   "status": "ok",
+   "time": 0.9515165359998718
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 47,
+   "status": "ok",
+   "time": 0.9498081699994145
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 47,
+   "status": "ok",
+   "time": 0.9498326419998193
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 47,
+   "status": "ok",
+   "time": 3.9497203599994464
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 47,
+   "status": "ok",
+   "time": 3.9513904290006394
+  },
+  {
+   "graph": "g900_p850",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 47,
+   "status": "ok",
+   "time": 3.949802393999562
+  },
+  {
+   "graph": "test298",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 22,
+   "status": "ok",
+   "time": 0.9496945619994221
+  },
+  {
+   "graph": "test298",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 22,
+   "status": "ok",
+   "time": 0.9497585509998316
+  },
+  {
+   "graph": "test298",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 22,
+   "status": "ok",
+   "time": 0.9535061810001935
+  },
+  {
+   "graph": "test298",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 22,
+   "status": "ok",
+   "time": 3.950679687999582
+  },
+  {
+   "graph": "test298",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 22,
+   "status": "ok",
+   "time": 3.9547717739997097
+  },
+  {
+   "graph": "test298",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 22,
+   "status": "ok",
+   "time": 3.9550223930000357
+  },
+  {
+   "graph": "test493",
+   "budget": 1.0,
+   "seed": 0,
+   "size": 25,
+   "status": "ok",
+   "time": 0.9570751100000052
+  },
+  {
+   "graph": "test493",
+   "budget": 1.0,
+   "seed": 1,
+   "size": 25,
+   "status": "ok",
+   "time": 0.9504029869995065
+  },
+  {
+   "graph": "test493",
+   "budget": 1.0,
+   "seed": 2,
+   "size": 25,
+   "status": "ok",
+   "time": 0.9499504760005948
+  },
+  {
+   "graph": "test493",
+   "budget": 4.0,
+   "seed": 0,
+   "size": 25,
+   "status": "ok",
+   "time": 3.9495784439995987
+  },
+  {
+   "graph": "test493",
+   "budget": 4.0,
+   "seed": 1,
+   "size": 25,
+   "status": "ok",
+   "time": 3.949598758999855
+  },
+  {
+   "graph": "test493",
+   "budget": 4.0,
+   "seed": 2,
+   "size": 25,
+   "status": "ok",
+   "time": 3.9501962539998203
+  }
+ ]
+}
