@@ -1,0 +1,1 @@
+ENV PYTHONPATH=/app/{PY_SRC}
