@@ -7,7 +7,7 @@ against the library as it is (must pass), against **decoys** (behavior-preservin
 **mutants** (small behavioral bugs; must fail). Reward is 1 only if all of that holds. No partial credit.
 
 Read one public sample end to end before starting, e.g.
-`/home/user/ridgesai/ridges-bench/test-generation/tenacity__retry-strategies/` (instruction.md, tests/*.patch,
+`<ridges-bench clone>/test-generation/tenacity__retry-strategies/` (`git clone https://github.com/ridgesai/ridges-bench`) (instruction.md, tests/*.patch,
 solution/solve.sh). Your task must look and read like that sample, only harder.
 
 ## 1. Difficulty bar (must be clearly harder than the public samples)
@@ -79,8 +79,8 @@ Mirror the tenacity sample's structure and tone:
 ## 4. Tooling: `harness/tgm.py`
 
 ```bash
-cd /home/user/ggbood
-export TG_BENCH=/home/user/ggbood/ridges_hard TG_ROOT=/opt/tgm
+cd <this repository>
+export TG_BENCH=$PWD/ridges_hard TG_ROOT=/opt/tgm
 python3 harness/tgm.py new LIB__focus --lang LANG --url https://github.com/OWNER/REPO.git --sha <40-hex> \
     --var KEY=VALUE ... --desc "Write a regression test suite for ..."     # scaffold (runner vars: see template)
 python3 harness/tgm.py edit TASK mutant_1        # prints an editable copy of the repo; edit files there
@@ -89,7 +89,7 @@ python3 harness/tgm.py prepare -j 2 TASK         # build every library copy (cac
 python3 harness/tgm.py suite -j 2 TASK DIR       # grade a directory of test files (while iterating)
 python3 harness/tgm.py solution -j 2 TASK        # grade solution/solve.sh -> must be reward 1
 python3 harness/tgm.py check TASK                # layout lint -> problems must be []
-nice -n 10 python3 harness/tgm.py docker TASK --ca /root/.ccr/ca-bundle.crt   # real images -> docker_reward "1"
+nice -n 10 python3 harness/tgm.py docker TASK   # real images -> docker_reward "1" (add --ca FILE behind a TLS-intercepting proxy)
 ```
 
 `solution/solve.sh` writes the suite with one heredoc per file (`cat > regression_tests/x <<'EOF'`), like the
@@ -102,12 +102,12 @@ Write `ridges_hard/_notes/<TASK>.md` (outside the task directory, never shipped 
 scope summary, and a table of every mutant (file, one-line change, category from section 1, which reference test
 kills it) and every decoy (what it changes, which over-specified assertion it defeats, why it is in-contract-safe).
 
-## 6. Sandbox constraints
+## 6. Machine constraints
 
-- 4 CPUs shared by several agents: use `-j 2` at most, `nice -n 10` for docker/compiles, one heavy job at a time.
-- Network goes through a proxy. `deb.debian.org` is blocked (apt on Debian images fails here);
-  `archive.ubuntu.com`, PyPI, npm, proxy.golang.org, crates (index/static), Maven Central, rubygems,
-  repo.packagist.org, GitHub (git clone) work. The language templates already pick images that build here.
+- Several agents usually share the machine: keep `-j` small (2-4), use `nice -n 10` for docker/compiles, one heavy job
+  at a time per agent.
+- Behind a restrictive proxy (e.g. the Claude cloud sandbox, where `deb.debian.org` is blocked), prefer base images that
+  already ship git and python3, and pass `--ca <bundle>` to `tgm.py docker`. On a normal server none of this matters.
 - Disk is limited: `tgm.py docker` removes its images afterwards; do not keep extra images or copies.
 - Only touch your own task directory, its notes file and `/opt/tgm/<TASK>`. Do not edit `harness/tgm.py`,
   `harness/tgm_templates/` or other tasks (language-framework agents may edit their own language's template).
